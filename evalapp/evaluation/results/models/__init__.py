@@ -8,6 +8,7 @@ Import paths remain backward-compatible::
     from evalapp.evaluation.results.models import *
 """
 
+from .errors import EvaluationError
 from .execution import (
     DurationMetrics,
     E2EResult,
@@ -42,6 +43,7 @@ from .summary import (
 )
 
 __all__ = [
+    "EvaluationError",
     # execution
     "TestCaseResult",
     "DurationMetrics",

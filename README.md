@@ -254,9 +254,16 @@ When the run finishes, a single-file `report.html` is written to the workspace r
 | `evalapp evaluate` | Evaluate an artifact or source project (build → install → E2E → score → report) |
 | `evalapp retest` | Re-run E2E tests and regenerate the report |
 | `evalapp report` | Generate or regenerate the report for a completed run |
+| `evalapp export` | Read-only, versioned JSON export for local data exchange |
 | `evalapp history` | Show the execution history of a workspace |
 
 See the [API Reference](docs/API.md) for the full option set of every command.
+
+```bash
+evalapp export --workspace ./workspace --output ./evaluation.json
+```
+
+Export keeps native snapshots, report-selected scores and retest observations separate, with source provenance and unknown execution states. It does not rescore or modify the workspace. Output must be outside the workspace; existing output requires `--overwrite`. JSON may contain free text and local paths: manually redact it before sharing. See the [v1 contract and Python APIs](docs/API.md#evalapp-export) for supported formats and best-effort consistency limits.
 
 ---
 

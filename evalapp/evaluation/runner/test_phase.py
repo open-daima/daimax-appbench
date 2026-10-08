@@ -26,6 +26,7 @@ from .state import (
 from .build_phase import find_h5_serve_root, rewrite_cdn_to_local
 from ...config import Config
 from ..results.models import TestCaseResult
+from ..results.models.errors import EvaluationError, error_from_exception, error_from_legacy
 from ...benchset.testcases.models import TestCase
 from ...utils.logging import get_logger
 from ...utils.process import _kill_process_group
@@ -99,6 +100,15 @@ def infer_launch_status(results: list[TestCaseResult]) -> str:
 
     # 所有用例都失败，说明启动有问题
     return "failed"
+
+
+def collect_test_errors(results: list[TestCaseResult]) -> list[EvaluationError]:
+    """汇集明确的运行异常；普通断言失败不归责执行器。"""
+    errors = [error for result in results for error in result.error_details]
+    launch = next((r for r in results if r.test_case_id == "TC_LAUNCH"), None)
+    if launch and (not launch.passed or _result_has_white_screen(launch)):
+        errors.append(EvaluationError(stage="launch", code="launch_failed", message=launch.details))
+    return errors
 
 
 # ── ai-ui-test tool management ──────────────────────────────────────
@@ -476,6 +486,7 @@ def run_single_test(
                 report_started_at=start,
                 report_generated_at=generated_at,
                 verifications=verifications,
+                error_details=[error_from_legacy(error_type, reason, stage="test")] if error_type else [],
             )
 
         return TestCaseResult(
@@ -486,7 +497,7 @@ def run_single_test(
             duration=duration,
         )
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         raw_report_path, verifications = recover_timeout_artifacts(
             report_dir=report_dir,
             test_case_id=tc.id,
@@ -512,6 +523,7 @@ def run_single_test(
             report_started_at=start,
             report_generated_at=generated_at,
             verifications=verifications,
+            error_details=[error_from_exception(exc, stage="test")],
         )
     except Exception as exc:  # pragma: no cover - defensive path
         return TestCaseResult(
@@ -520,6 +532,7 @@ def run_single_test(
             status="FAIL",
             details=f"Error: {exc}",
             duration=time.time() - start,
+            error_details=[error_from_exception(exc, stage="test")],
         )
 
 
@@ -878,6 +891,7 @@ def execute_h5_tests(
             install_status="skipped",
             launch_status="unknown",
             error_message=message,
+            error_details=[EvaluationError(origin="environment", stage="test", code="test_tool_unavailable", message=message)],
         )
 
     results: list[TestCaseResult] = []
@@ -926,6 +940,7 @@ def execute_h5_tests(
         build_status="skipped",
         install_status="skipped",
         launch_status=infer_launch_status(results),
+        error_details=collect_test_errors(results),
     )
 
 
@@ -1151,6 +1166,7 @@ def build_and_serve_h5(
                     launch_status="failed",
                     build_duration_ms=build_cmd_result.duration_ms,
                     error_message=message,
+                    error_details=[EvaluationError(stage="build", code="build_failed", message=message)],
                 )
             if not dist_h5.exists():
                 message = f"Build succeeded but {dist_dir_name}/ directory not found"
@@ -1162,6 +1178,7 @@ def build_and_serve_h5(
                     launch_status="failed",
                     build_duration_ms=build_cmd_result.duration_ms,
                     error_message=message,
+                    error_details=[EvaluationError(stage="build", code="build_failed", message=message)],
                 )
         else:
             logger.info(
@@ -1184,6 +1201,7 @@ def build_and_serve_h5(
                 install_status="skipped",
                 launch_status="failed",
                 error_message=message,
+                error_details=[EvaluationError(stage="launch", code="launch_failed", message=message)],
             )
 
     logger.info("Serving H5 from %s", serve_root)
@@ -1240,6 +1258,7 @@ def build_and_serve_h5(
                 install_status="skipped",
                 launch_status="failed",
                 error_message=message,
+                error_details=[EvaluationError(stage="launch", code="launch_failed", message=message)],
             )
         logger.info("H5 server started at %s (pid %s)", h5_url, serve_proc.pid)
 

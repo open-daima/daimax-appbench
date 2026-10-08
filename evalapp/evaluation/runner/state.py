@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..metrics.models import ANREvent, CrashEvent, StabilityMetrics
-from ..results.models import TestCaseResult
+from ..results.models import EvaluationError, TestCaseResult
 from ...utils.logging import get_logger
 from ...utils.paths import get_project_root
 from ...utils.process import run_streaming
@@ -114,6 +114,7 @@ class ExecutionResult:
 
     # 稳定性指标（由 compute_usability_metrics 计算后赋值）
     stability_metrics: "StabilityMetrics | None" = None
+    error_details: list[EvaluationError] = field(default_factory=list)
 
 
 def run_command(

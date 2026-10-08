@@ -20,6 +20,7 @@ from ..metrics.models import (
     SuccessRateMetrics,
 )
 from ...benchset.samples.models import EvalPrompt
+from ..results.models.errors import EvaluationError, error_from_exception, error_from_legacy
 from ..results.models import (
     EvalRun,
     ProcessCollection,
@@ -392,6 +393,7 @@ class Evaluator:
                                 item_type="sample",
                                 generation_success=False,
                                 error_message=str(exc),
+                                error_details=[error_from_exception(exc)],
                                 requires_backend=False,
                             )
                             run.prompt_results.append(result)
@@ -636,6 +638,7 @@ class Evaluator:
             generation_duration=generation_result.duration,
             project_path=generation_result.project_path,
             error_message=execution_result.error_message,
+            error_details=list(execution_result.error_details),
             process_data=process_data,
             test_results=execution_result.test_results,
             requires_backend=sample.requires_backend,
@@ -752,6 +755,13 @@ class Evaluator:
                 generation_duration=generation_result.duration,
                 project_path=generation_result.project_path,
                 error_message=generation_result.error or process_data.error_message,
+                error_details=[
+                    error_from_legacy(process_data.error_type, generation_result.error or process_data.error_message, stage="generation")
+                    if process_data.error_type else EvaluationError(
+                        origin="generator", stage="generation", code="generation_failed",
+                        message=generation_result.error or process_data.error_message,
+                    )
+                ],
                 process_data=process_data,
                 requires_backend=requires_backend,
             )
@@ -807,6 +817,7 @@ class Evaluator:
             generation_duration=generation_result.duration,
             project_path=generation_result.project_path,
             error_message=execution_result.error_message,
+            error_details=list(execution_result.error_details),
             process_data=process_data,
             test_results=execution_result.test_results,
             requires_backend=requires_backend,
@@ -1019,6 +1030,7 @@ class Evaluator:
             requirement=sample.requirement,
             generation_success=False,
             error_message=message,
+            error_details=[EvaluationError(stage="generation", code="generation_not_ready", message=message)],
             requires_backend=sample.requires_backend,
         )
         result.success_rate = SuccessRateMetrics(

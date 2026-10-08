@@ -35,6 +35,7 @@ from .test_phase import (
     ensure_ai_ui_test_ready,
     execute_h5_tests,
     infer_launch_status,
+    collect_test_errors,
     make_failure_results,
     run_single_test,
     parse_results,
@@ -46,6 +47,7 @@ from ...config import Config
 from ..metrics.collectors.device_logs import DeviceLogCollector
 from ..metrics.models import ANREvent, CrashEvent
 from ..results.models import TestCaseResult
+from ..results.models.errors import EvaluationError, error_from_exception
 from ...benchset.testcases.models import TestCase
 from ...utils.logging import get_logger
 
@@ -275,6 +277,7 @@ class TestExecutor:
                 launch_status="failed",
                 build_duration_ms=build_result["duration_ms"],
                 error_message=message,
+                error_details=[EvaluationError(stage="build", code="build_failed", message=message)],
             )
 
         artifact_path = build_result["artifact_path"]
@@ -298,6 +301,7 @@ class TestExecutor:
                 package_name=resolved_package_name,
                 build_duration_ms=build_result["duration_ms"],
                 error_message=message,
+                error_details=[EvaluationError(stage="install", code="install_failed", message=message)],
             )
 
         # Verify ai-ui-test is available only after the app is prepared.
@@ -314,6 +318,7 @@ class TestExecutor:
                 package_name=resolved_package_name,
                 build_duration_ms=build_result["duration_ms"],
                 error_message=message,
+                error_details=[EvaluationError(origin="environment", stage="test", code="test_tool_unavailable", message=message)],
             )
 
         logger.info(
@@ -368,6 +373,7 @@ class TestExecutor:
                     except Exception as exc:
                         logger.error("TC %s raised: %s", tc.id, exc, exc_info=True)
                         result = make_failure_results([tc], f"TC raised: {exc}")[0]
+                        result.error_details = [error_from_exception(exc, stage="test")]
                     results[idx] = result
                     logger.info(
                         "  [%s/%s] %s: %s -> %s: %s",
@@ -435,6 +441,7 @@ class TestExecutor:
                         except Exception as exc:
                             logger.error("TC %s raised: %s", tc.id, exc, exc_info=True)
                             result = make_failure_results([tc], f"TC raised: {exc}")[0]
+                            result.error_details = [error_from_exception(exc, stage="test")]
                         results[idx] = result
                         logger.info(
                             "  [%s/%s] %s: %s -> %s: %s",
@@ -502,6 +509,7 @@ class TestExecutor:
 
         return ExecutionResult(
             test_results=results,
+            error_details=collect_test_errors(results),
             build_status="success",
             install_status="success",
             launch_status=infer_launch_status(results),
@@ -644,6 +652,7 @@ class TestExecutor:
                 artifact_path=artifact_path,
                 package_name=package_name,
                 error_message=message,
+                error_details=[EvaluationError(origin="environment", stage="test", code="test_tool_unavailable", message=message)],
             )
 
         logger.info(
@@ -685,6 +694,7 @@ class TestExecutor:
                     except Exception as exc:
                         logger.error("TC %s raised: %s", tc.id, exc)
                         result = make_failure_results([tc], f"TC raised: {exc}")[0]
+                        result.error_details = [error_from_exception(exc, stage="test")]
                     results[idx] = result
         else:
             for i, tc in enumerate(test_cases):
@@ -726,6 +736,7 @@ class TestExecutor:
 
         return ExecutionResult(
             test_results=results,
+            error_details=collect_test_errors(results),
             build_status="skipped",
             install_status="skipped",
             launch_status=infer_launch_status(results) if results else "unknown",

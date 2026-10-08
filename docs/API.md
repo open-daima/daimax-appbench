@@ -11,6 +11,7 @@ Complete reference for the `evalapp` CLI commands, configuration schema, and ext
 | `evalapp evaluate` | Evaluate artifacts or workspace code (build → install → E2E → score → report) |
 | `evalapp retest` | Re-run E2E tests and regenerate report |
 | `evalapp report` | Generate or regenerate report for a completed evaluation |
+| `evalapp export` | Read-only v1 JSON export for local data exchange, without rescoring |
 | `evalapp history` | View workspace execution history |
 | `evalapp migrate-workspace` | Migrate legacy workspace directory structures |
 
@@ -127,6 +128,75 @@ evalapp report --compare
 # Regenerate summary for a workspace
 evalapp report --workspace <workspace_path>
 ```
+
+### `evalapp export`
+
+```bash
+evalapp export --workspace ./workspace --output ./evaluation.json
+```
+
+Both options are required. The output parent must exist; the output must be outside the input workspace, including symlink aliases. Existing output is rejected unless `--overwrite` is explicit. Output is atomic; permission and other I/O errors fail without replacing existing output. Invalid JSON, encoding or structure produces source warnings. No recognizable result or planned item is an error.
+
+No generator plugin is required. Export does not evaluate, score, generate reports, extract screenshots, create/recover manifests, or write command history, source locks or caches. Current per-sample `sample_scores.json`, `scores.json`, `evaluation.json` and workspace `execution_manifest.json` are supported. Legacy `results/` shards and run_data-only workspaces are not assembled automatically; load an `EvalRun` explicitly and use the Python API instead.
+
+#### Python API and Schema
+
+```python
+from pathlib import Path
+from evalapp.evaluation.results.models import EvalRun, PromptResult
+from evalapp.evaluation.results.export import ResultExport, export_run
+from evalapp.services.result_export import export_workspace
+
+run = EvalRun(prompt_results=[PromptResult(
+    sample_id="sample", prompt_id="prompt", platform="web",
+    generator_name="example", generation_success=False,
+)])
+memory_result = export_run(run)
+workspace_result = export_workspace(Path("./workspace"))
+schema = ResultExport.model_json_schema()
+payload = memory_result.model_dump(mode="json")
+```
+
+Both APIs return `ResultExport` without writing files. `export_run` does not read files, mutate its input or call `compute_summary`. It copies the current in-memory model values, including existing defaults. Workspace records are not loaded through native model defaults.
+
+#### Fixed v1 Fields
+
+| Field | Contract |
+|-------|----------|
+| `schema_version` / `exported_at` | `"1.0"` / timezone-aware UTC export time |
+| `source` | `{kind, run_id, timestamp, native_summary, consistency}`; run metadata is copied only from EvalRun; workspace run_id/timestamp/native_summary are null |
+| `source.consistency` | Memory: `{mode: "in_memory", change_detected: null}`; workspace: `{mode: "best_effort", change_detected: boolean}` |
+| `items[]` | Nullable string identities `sample_id/prompt_id/platform/generator_name`, the three views below, and `execution`; empty strings are preserved |
+| `evaluation_snapshot` | Per-platform `prompt_result`: `generation_success`, full native `success_rate/quality/experience` objects, independent `test_results`, `error_message/error_details`, `evidence`, `provenance` |
+| `reported_scores` | `{data, provenance}`; current report-selected platform scores, not a full native metric model |
+| `evaluation_observation` | `{test_results, error_message, error_details, provenance}` from evaluation.json, never merged into the snapshot |
+| `execution` | `{generate, evaluate, overall, provenance}`, copied only from recorded manifest state |
+| `execution_summary` | `{unit: "sample_platform", total, counts, provenance, interruption}`; identifiable, conflict-free manifest items only; extra result-directory observations do not enlarge the planned denominator |
+| `warnings[]` | `{code, message, sample_id, platform, file, pointer}`; the last four fields are nullable; messages do not echo source contents |
+
+All wrapper fields are present. A missing source makes its entire view null. Unknown scalars/lists are null; explicitly recorded empty lists remain `[]`. Native nulls, real zero scores, failure-zero policy and `SKIPPED` remain distinct. Tests keep input order, original IDs and sample/platform scope; duplicate IDs are not deduplicated, and passed-only legacy cases do not gain invented status fields. Identity conflicts keep separate source observations with warnings.
+
+`evidence` contains only nullable `project_path/e2e_report_path/artifact_path/h5_url` references; per-test report references stay in test_results. No process_data.raw, private traces or full logs are expanded. `provenance` is `{file, pointer, updated_at, mtime_ns}`: workspace-relative file, JSON Pointer, original timestamp and read-time file mtime. Memory uses null file/mtime and `/prompt_results/<index>`. Platform timestamps take priority over file-level timestamps; naive historical timestamps are not assigned UTC.
+
+Report arbitration remains **whole-sample-file** based: sample_scores wins only when strictly newer; ties choose scores, and missing content timestamps fall back to mtime. It does not select each platform's newest record independently. An old snapshot, newer report scores and retest observations keep separate provenance; export never fills new scores with old details or recomputes composite scores.
+
+Execution states are `pending/running/completed/failed/skipped/unknown`; missing/unrecognized states become unknown. Counts have exactly these six non-negative keys and sum to total. Missing/corrupt manifests, incomplete identities or conflicts yield null total/counts. Completed execution does not imply passed assertions, and completing one platform never becomes a sample-level completion claim.
+
+`interruption` is `{suspected: boolean|null, evidence: [{reason, provenance}]}` with reasons `manifest_unfinished/manifest_terminal/run_unfinished/run_finished`. Raw manifest and latest non-report run finalization records are used: positive unfinished evidence wins; valid terminal evidence allows false only without relevant unknown/corrupt sources; absent evidence means null. This is not proof of process death. Memory always returns `{suspected: null, evidence: []}`. No mixed aggregate score, new pass rate or overall passed flag is derived.
+
+Warning codes: `missing_snapshot`, `invalid_json`, `invalid_structure`, `identity_conflict`, `source_mismatch`, `unknown_execution_status`, `source_changed`. Different timestamps or unprovable source correspondence produce source_mismatch.
+
+#### Consistency and Sharing
+
+Workspace reads are best effort, not directory-wide transactions. No source write lock, process pause or automatic retry is used. Each participating file is read once; stat fingerprints are checked before/after reads and at completion, with candidate rediscovery. Modification, replacement, addition or disappearance produces source_changed while retaining successful observations. `change_detected=false` means only that no change was detected.
+
+This is **local data exchange**, not a public-sharing format: free text, metric details, tests and evidence paths may contain sensitive information and require manual redaction before sharing. Nothing is uploaded or bundled. v1 minor versions may add backward-compatible optional fields; consumers may ignore new fields. Removal, type or semantic changes require a major version. New native metric details do not change wrapper semantics.
+
+#### Structured Error Compatibility
+
+`EvaluationError` (imported from `evalapp.evaluation.results.models`) has `origin/stage/code/message/raw_error_type`. Origins: `generator/evaluator/environment/unknown`. Stages: `generation/evaluation/build/install/launch/test/scoring/unknown`. Missing raw_error_type is an empty string. Initial codes: `no_test_cases`, `evaluation_exception`, `test_tool_unavailable`, `build_failed`, `install_failed`, `launch_failed`, `generation_failed`, `generation_not_ready`, `timeout`, `unknown`.
+
+PromptResult, ExecutionResult and individual test results gain a default-empty error_details list. Existing error_message, ProcessCollection.error_type, FailureCategory, scoring, failure-zero and retry behavior remain unchanged. generation_success=false alone does not assign generator responsibility; assertion failure alone is not an executor exception. Timeout requires a known exception type or explicit code. New evaluation.json records preserve status/duration/errors; targeted retests retain untested cases without writing a partial result as a full native snapshot.
 
 ### Global Parameters
 

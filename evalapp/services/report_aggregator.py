@@ -173,6 +173,31 @@ def _resolve_fresh_scores(
     if not isinstance(ss_raw, dict):
         return scores_raw, ("scores" if scores_raw is not None else "")
 
+    selected, source = select_fresh_scores(
+        scores_raw, ss_raw,
+        scores_freshness=_freshness(scores_path, scores_raw),
+        sample_freshness=_freshness(ss_path, ss_raw),
+        allow_sample_scores_fallback=allow_sample_scores_fallback,
+    )
+    if source == "sample_scores" and scores_raw is not None:
+        logger.info(
+            "样本评分新鲜度仲裁：%s 的 sample_scores.json 比 scores.json 新，采用前者",
+            sample_dir.name,
+        )
+    return selected, source
+
+
+def select_fresh_scores(
+    scores_raw: dict | None,
+    ss_raw: dict | None,
+    *,
+    scores_freshness: float,
+    sample_freshness: float,
+    allow_sample_scores_fallback: bool = True,
+) -> tuple[dict | None, str]:
+    """纯来源仲裁；读取与时间获取由调用方按各自容错策略完成。"""
+    if not isinstance(ss_raw, dict):
+        return scores_raw, ("scores" if scores_raw is not None else "")
     converted = _convert_sample_scores_to_scores(ss_raw)
 
     if scores_raw is None:
@@ -186,11 +211,7 @@ def _resolve_fresh_scores(
 
     # 两者都存在且均可用 → 仅当 sample_scores 严格更新时采用；
     # 时间戳相等（同事件）或无法判定 → 一律选信息更完整的 scores.json
-    if _freshness(ss_path, ss_raw) > _freshness(scores_path, scores_raw):
-        logger.info(
-            "样本评分新鲜度仲裁：%s 的 sample_scores.json 比 scores.json 新，采用前者",
-            sample_dir.name,
-        )
+    if sample_freshness > scores_freshness:
         return converted, "sample_scores"
     return scores_raw, "scores"
 

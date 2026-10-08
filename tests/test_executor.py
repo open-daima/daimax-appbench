@@ -275,6 +275,9 @@ def test_timeout_recovers_report_and_page_diagnostics(tmp_path, stream_output):
         )
 
     assert result.status == "FAIL"
+    assert result.error_details[0].code == "timeout"
+    assert result.error_details[0].stage == "test"
+    assert result.error_details[0].origin == "unknown"
     assert "recovered partial artifacts" in result.details
     assert (
         Path(result.report_path).read_text(encoding="utf-8")
