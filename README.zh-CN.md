@@ -254,9 +254,16 @@ evalapp evaluate --url https://my-app.vercel.app --sample-ids CoffeeRoastLog
 | `evalapp evaluate` | 评测产物或源码项目（构建 → 安装 → E2E → 评分 → 报告） |
 | `evalapp retest` | 重跑 E2E 测试并重新生成报告 |
 | `evalapp report` | 为已完成的评测生成 / 重新生成报告 |
+| `evalapp export` | 只读导出带版本的本地交换 JSON |
 | `evalapp history` | 查看工作区的执行历史记录 |
 
 各命令的完整参数说明见 [API 参考](docs/API.zh-CN.md)。
+
+```bash
+evalapp export --workspace ./workspace --output ./evaluation.json
+```
+
+导出分开保留原生快照、报告选中分数和重测观察结果，附来源与未知执行状态，不重新评分、不修改工作区。输出必须在工作区外，覆盖已有文件需 `--overwrite`。JSON 可能含自由文本和本地路径，分享前须人工脱敏。支持格式及尽力一致性限制见 [v1 契约与 Python API](docs/API.zh-CN.md#evalapp-export)。
 
 ---
 

@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from ...generators import GenerationResult
+from ..results.models.errors import EvaluationError, error_from_legacy
 from ..results.models import (
     DurationMetrics,
     E2EResult,
@@ -370,6 +371,7 @@ def make_no_test_cases_result(
         requirement=requirement,
         generation_success=False,
         error_message="No test cases found",
+        error_details=[EvaluationError(origin="evaluator", stage="test", code="no_test_cases", message="No test cases found")],
         requires_backend=requires_backend,
     )
     if build_result_data_func is not None:
@@ -626,6 +628,9 @@ def finalize_prompt_result(
         compute_success_rate,
         compute_usability_metrics,
     )
+
+    if process_data.error_type or process_data.error_message:
+        result.error_details.append(error_from_legacy(process_data.error_type, process_data.error_message))
 
     # Set E2E report path
     e2e_path = resolve_e2e_report_path(report_dir, workspace_path)

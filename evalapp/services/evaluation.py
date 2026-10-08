@@ -92,6 +92,9 @@ class EvaluationService:
             "launch_status": "skipped",
             "stability_metrics": {},
             "test_results": [],
+            "error_message": pr.error_message,
+            "error_details": [e.model_dump(mode="json") for e in pr.error_details],
+            "updated_at": _now_local_iso(),
         }
 
         if pr.result_data:
@@ -119,6 +122,9 @@ class EvaluationService:
             platform_data["test_results"].append({
                 "test_case_id": tc_id,
                 "passed": tr.passed,
+                "status": tr.status,
+                "duration": tr.duration,
+                "error_details": [e.model_dump(mode="json") for e in tr.error_details],
                 "description": getattr(tr, "description", "") or details,
                 "failure_reason": getattr(tr, "failure_reason", "") or (details if not tr.passed else ""),
                 "report_path": getattr(tr, "report_path", ""),
@@ -216,6 +222,7 @@ class EvaluationService:
         }
 
         scores_data = {
+            "error_details": [e.model_dump(mode="json") for e in pr.error_details],
             "success_rate_score": pr.success_rate.composite_score if pr.success_rate else 0.0,
             "quality_score": pr.quality.composite_score if pr.quality else 0.0,
             "experience_score": pr.experience.composite_score if pr.experience else 0.0,
@@ -1096,6 +1103,9 @@ class EvaluationService:
             results.append({
                 "test_case_id": tc_id,
                 "passed": tr.passed,
+                "status": tr.status,
+                "duration": tr.duration,
+                "error_details": [e.model_dump(mode="json") for e in tr.error_details],
                 "description": getattr(tr, "description", "") or details,
                 "failure_reason": getattr(tr, "failure_reason", "") or (details if not tr.passed else ""),
                 "report_path": getattr(tr, "report_path", ""),
@@ -1127,6 +1137,19 @@ class EvaluationService:
             existing_test_results = existing_platform.get("test_results", [])
             merged = self._merge_test_results(existing_test_results, new_test_results)
             existing_platform["test_results"] = merged
+            existing_platform["updated_at"] = _now_local_iso()
+            existing_platform["error_message"] = pr.error_message
+            # 保留未重测用例携带的错误，不将局部结果写成完整原生快照。
+            errors = [e for r in merged for e in r.get("error_details", [])]
+            retained_errors = [
+                error for error in existing_platform.get("error_details", [])
+                if error.get("stage") == "generation"
+                or (error.get("stage") == "launch" and "TC_LAUNCH" not in test_case_ids)
+            ]
+            for error in [*retained_errors, *[e.model_dump(mode="json") for e in pr.error_details]]:
+                if error not in errors:
+                    errors.append(error)
+            existing_platform["error_details"] = errors
 
             # 更新状态字段（取最新的）
             if pr.result_data:
@@ -1154,6 +1177,9 @@ class EvaluationService:
                 "launch_status": "skipped",
                 "stability_metrics": {},
                 "test_results": self._build_test_results_from_prompt_result(pr),
+                "error_message": pr.error_message,
+                "error_details": [e.model_dump(mode="json") for e in pr.error_details],
+                "updated_at": _now_local_iso(),
             }
             if pr.result_data:
                 rd = pr.result_data

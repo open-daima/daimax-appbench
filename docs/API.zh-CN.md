@@ -11,6 +11,7 @@
 | `evalapp evaluate` | 评测产物或工作区代码（构建 → 安装 → E2E → 评分 → 报告） |
 | `evalapp retest` | 重跑 E2E 测试并重新生成报告 |
 | `evalapp report` | 为已完成的评测生成 / 重新生成报告 |
+| `evalapp export` | 只读导出 v1 本地交换 JSON，不重新评分 |
 | `evalapp history` | 查看工作区的执行历史记录 |
 | `evalapp migrate-workspace` | 迁移旧版工作区目录结构 |
 
@@ -127,6 +128,76 @@ evalapp report --compare
 # 指定工作区重新生成汇总报告
 evalapp report --workspace <workspace_path>
 ```
+
+### `evalapp export`
+
+```bash
+evalapp export --workspace ./workspace --output ./evaluation.json
+# 仅在明确需要替换已有输出时加 --overwrite
+```
+
+`--workspace`、`--output` 必填；输出父目录须已存在，输出必须位于输入工作区之外（包括符号链接别名）。已有输出默认拒绝覆盖。成功时原子写入，读取权限或其他 I/O 错误时非零退出并保留原输出。损坏 JSON、编码或结构产生来源提示；没有可识别的结果或计划项则失败。
+
+无需生成器插件；不运行评测、模型评分、报告生成或截图提取，不创建 manifest、命令历史、锁或源缓存。仅支持当前的逐样本 `sample_scores.json`、`scores.json`、`evaluation.json` 和工作区 `execution_manifest.json`。旧 `results/` 分片或仅有 `run_data.json` 的工作区不自动拼装，可显式加载 `EvalRun` 后使用下面的 API。
+
+#### Python API 与 Schema
+
+```python
+from pathlib import Path
+from evalapp.evaluation.results.models import EvalRun, PromptResult
+from evalapp.evaluation.results.export import ResultExport, export_run
+from evalapp.services.result_export import export_workspace
+
+run = EvalRun(prompt_results=[PromptResult(
+    sample_id="sample", prompt_id="prompt", platform="web",
+    generator_name="example", generation_success=False,
+)])
+memory_result = export_run(run)
+workspace_result = export_workspace(Path("./workspace"))
+schema = ResultExport.model_json_schema()
+payload = memory_result.model_dump(mode="json")
+```
+
+两个 API 均返回 `ResultExport`，不写文件；`export_run` 不读文件、不修改输入、不调用 `compute_summary`。已有内存模型默认值按当前对象复制；工作区历史记录不经过原生模型默认值补齐。
+
+#### v1 固定字段
+
+| 字段 | 契约 |
+|------|------|
+| `schema_version` / `exported_at` | `"1.0"` / 带时区的 UTC 导出时间 |
+| `source` | `{kind, run_id, timestamp, native_summary, consistency}`；内存来源复制 run 元数据，工作区的 `run_id/timestamp/native_summary` 为 null，不拼跨批次信息 |
+| `source.consistency` | 内存为 `{mode: "in_memory", change_detected: null}`；工作区为 `{mode: "best_effort", change_detected: boolean}` |
+| `items[]` | `sample_id/prompt_id/platform/generator_name` 为 string 或 null，另含以下三个独立视图和 `execution`；空字符串原样保留 |
+| `evaluation_snapshot` | 逐平台 `prompt_result`：`generation_success`、`success_rate/quality/experience` 原生完整对象、独立评测 `test_results`、`error_message/error_details`、`evidence`、`provenance` |
+| `reported_scores` | `{data, provenance}`；`data` 是当前报告仲裁选中的平台分数字典，不冒充完整原生指标模型 |
+| `evaluation_observation` | `evaluation.json` 的 `{test_results, error_message, error_details, provenance}`，不覆盖或拼接进快照 |
+| `execution` | `{generate, evaluate, overall, provenance}`；仅复制 manifest 已记录状态，不从分数推断 |
+| `execution_summary` | `{unit: "sample_platform", total, counts, provenance, interruption}`；仅统计可完整识别、无冲突的 manifest 项，结果目录额外项不加入计划分母 |
+| `warnings[]` | `{code, message, sample_id, platform, file, pointer}`；后四项可空，不回显原始文件正文 |
+
+所有包装字段始终存在；无对应来源时整个视图为 null。未知标量、未知数组为 null，明确空数组为 `[]`；原生 None、真实零分、失败计零及 `SKIPPED` 保留。用例保持顺序、原始 ID 和嵌套作用域，重复 ID 不去重；历史只有 passed 时不臆造 status。样本身份冲突分别保留来源并提示，不强行合并。
+
+`evidence` 仅含 `project_path/e2e_report_path/artifact_path/h5_url` 四个可空引用；逐用例报告引用仍在 `test_results` 中。不展开 `process_data.raw`、私有 trace 或完整日志。`provenance` 固定为 `{file, pointer, updated_at, mtime_ns}`：相对工作区路径、JSON Pointer、来源原始时间字符串、读取时文件 mtime；内存的 file/mtime 为 null、pointer 为 `/prompt_results/<index>`。时间优先取平台值，缺失取文件顶层值；旧 naive 时间不强附 UTC。
+
+报告分数沿用**整份样本文件**新鲜度仲裁：sample_scores 严格更新才采用，相等选 scores，缺少内容时间戳回退文件 mtime。不是每个平台各自选最新。快照旧、报告分数新、retest 用例更新时，三个视图各自保留来源，不用旧明细补新分数或重算 composite。
+
+执行状态固定为 `pending/running/completed/failed/skipped/unknown`；缺失或无法识别为 unknown。counts 固定六键，非负整数且总和等于 total；manifest 缺失、损坏、身份不完整或冲突时 total/counts 为 null。执行 completed 不等于断言 passed，不生成“任一平台完成即样本完成”的计数。
+
+`interruption` 为 `{suspected: boolean|null, evidence: [{reason, provenance}]}`；reason 为 `manifest_unfinished/manifest_terminal/run_unfinished/run_finished`。仅参考原始 manifest 与最新非 report run 的收尾记录：明确未终结优先 true；有效终结证据且无相关未知或损坏来源才可 false；缺证据为 null。它不证明进程死亡，内存转换始终为 `{suspected: null, evidence: []}`。不输出混合总分、新通过率或整体 passed。
+
+warnings 首批代码：`missing_snapshot`、`invalid_json`、`invalid_structure`、`identity_conflict`、`source_mismatch`、`unknown_execution_status`、`source_changed`。不同来源时间不一致或无法证明对应时使用 source_mismatch。
+
+#### 一致性与分享边界
+
+工作区是尽力一致读取，不加源写锁、不暂停运行、不自动重试。参与读取的文件仅读取一次，检查读取前后及整轮结束时的 stat 指纹并重新发现候选集合。修改、替换、新增或消失产生 `source_changed`，保留本次成功读取的观察；`change_detected=false` 仅表示未检测到变化，不代表事务快照。
+
+此导出用于**本地数据交换**，自由文本、指标明细、用例和证据路径可能含敏感信息，分享前必须人工脱敏；不会上传或打包证据文件。v1 小版本只增加向后兼容的可选字段，消费者允许忽略新增字段；删除、类型或语义变化须升级主版本。原生指标内部新增明细不改变包装语义。
+
+#### 结构化错误兼容
+
+`EvaluationError`（从 `evalapp.evaluation.results.models` 导入）包含 `origin/stage/code/message/raw_error_type`。origin 为 `generator/evaluator/environment/unknown`，stage 为 `generation/evaluation/build/install/launch/test/scoring/unknown`；原始类型缺失时为空字符串。首批 code：`no_test_cases`、`evaluation_exception`、`test_tool_unavailable`、`build_failed`、`install_failed`、`launch_failed`、`generation_failed`、`generation_not_ready`、`timeout`、`unknown`。
+
+`PromptResult`、`ExecutionResult` 和单用例结果新增默认空的 `error_details`；原 `error_message`、`ProcessCollection.error_type`、FailureCategory、评分公式、失败计零和重试行为不变。仅有 generation_success=false 不推断生成器责任，普通 E2E 断言失败不推断执行器异常；超时依赖明确异常类型或错误代码。新 evaluation.json 还保留用例 status/duration 和错误，定向 retest 保留未重测用例，不写成完整原生快照。
 
 ### 全局参数
 

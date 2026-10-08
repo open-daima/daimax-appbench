@@ -47,12 +47,14 @@ from .commands.evaluate import evaluate_cmd, retest_cmd
 from .commands.reporting import report
 from .commands.workspace import migrate_workspace_cmd
 from .commands.history import history_cmd
+from .commands.exporting import export_cmd
 
 main.add_command(evaluate_cmd)
 main.add_command(report)
 main.add_command(migrate_workspace_cmd)
 main.add_command(retest_cmd)
 main.add_command(history_cmd)
+main.add_command(export_cmd)
 
 # 第三方插件命令（如生成仓提供的 generate / design-samples / run）：
 # 通过 entry point 组 "evalapp.commands" 自动发现并注册。

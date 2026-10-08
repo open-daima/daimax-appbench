@@ -26,6 +26,7 @@ from ...metrics.models import (
     StateHandlingMetrics,
     SuccessRateMetrics,
 )
+from .errors import EvaluationError
 from .summary import (
     EvalSummary,
     FailureDetail,
@@ -56,6 +57,7 @@ class TestCaseResult(BaseModel):
     report_generated_at: float = 0.0
     # Verification results from ai-ui-test (white_screen, real_backend, etc.)
     verifications: dict | None = None
+    error_details: list[EvaluationError] = Field(default_factory=list)
 
 
 class DurationMetrics(BaseModel):
@@ -154,6 +156,7 @@ class PromptResult(BaseModel):
     experience: ExperienceMetrics | None = None
     e2e_report_path: str = ""  # E2E测试报告相对路径
     requires_backend: bool = False  # 是否需要后端服务
+    error_details: list[EvaluationError] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_identifiers(self) -> "PromptResult":
